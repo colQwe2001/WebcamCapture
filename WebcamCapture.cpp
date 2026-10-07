@@ -18,6 +18,19 @@ const int THRESHOLD_VALUE = 5;
 const int MIN_CONTOUR_AREA = 500;
 std::chrono::steady_clock::time_point recStartTime;
 
+float IoU(cv::Rect a, cv::Rect b) {
+	int x1 = std::max(a.x, b.x);
+	int y1 = std::max(a.y, b.y);
+	int x2 = std::min(a.x + a.width, b.x + b.width);
+	int y2 = std::min(a.y + a.height, b.y + b.height);
+	long intersection = std::max(0, x2 - x1) * std::max(0, y2 - y1);
+	if (intersection == 0) {
+		return 0.0f;
+	}
+	long unification = (long)(a.width * a.height) + (long)(b.width * b.height) - intersection;
+	float coof = (float) intersection / unification;
+	return coof;
+}
 void ShowInfo(cv::Mat& frame, double smoothedFps, double width, double height) {
 	cv::putText(frame,
 		"FPS: " + std::to_string(int(smoothedFps)),
