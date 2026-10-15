@@ -17,6 +17,25 @@ const int BLUR_SIZE = 5;
 const int THRESHOLD_VALUE = 5;
 const int MIN_CONTOUR_AREA = 500;
 std::chrono::steady_clock::time_point recStartTime;
+struct TrackedObject {
+	int id;
+	cv::Rect box;
+	int classId;
+	int lostFrames;
+	float confidence;
+};
+struct Detection {
+	cv::Rect box;
+	int classId;
+	float confidence;
+};
+struct CandidateObject {
+	cv::Rect box;
+	int classId;
+	float confidence;
+	int seenFrames;
+	int missedFrames;
+};
 
 float IoU(cv::Rect a, cv::Rect b) {
 	int x1 = std::max(a.x, b.x);
@@ -30,6 +49,102 @@ float IoU(cv::Rect a, cv::Rect b) {
 	long unification = (long)(a.width * a.height) + (long)(b.width * b.height) - intersection;
 	float coof = (float) intersection / unification;
 	return coof;
+}
+void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>& tracks, std::vector<CandidateObject>& candidates,  int& idCounter, bool Beep_mode){
+	for (auto& track : tracks) {
+		track.lostFrames++;
+	}
+	for (auto& can : candidates) {
+		can.missedFrames++;
+	}
+	for (auto& det : detections) {
+		int bestMatchIndex = -1;      // индекс лучшего трека
+		float bestIoU = 0.0f;
+		for (int i = 0; i < tracks.size(); i++) {
+			if (tracks[i].classId != det.classId) {
+				continue;
+			}
+			float iou = IoU(det.box, tracks[i].box);
+			if (iou > bestIoU) {
+				bestIoU = iou;
+				bestMatchIndex = i;
+			}
+
+		}
+		if (bestIoU > 0.3f && bestMatchIndex != -1) {
+			tracks[bestMatchIndex].box = det.box;
+			tracks[bestMatchIndex].confidence = det.confidence;
+			tracks[bestMatchIndex].lostFrames = 0;
+		}
+		else {
+			float bestIoUCan = 0.0f;
+			int bestIndexCan = -1;
+			for (int i = 0; i < candidates.size(); i++) {
+				float iou = IoU(candidates[i].box, det.box);
+				if (iou > bestIoUCan && candidates[i].classId == det.classId) {
+					bestIoUCan = iou;
+					bestIndexCan = i;
+				}
+			}
+			if(bestIndexCan != -1 && bestIoUCan > 0.3f){
+				if (candidates[bestIndexCan].seenFrames >= 3) {
+					TrackedObject newTrack;
+					newTrack.box = det.box;
+					newTrack.classId = det.classId;
+					newTrack.confidence = det.confidence;
+					newTrack.id = idCounter++;
+					newTrack.lostFrames = 0;
+					bool isRight = true;
+					for (auto& t : tracks) {
+						if (IoU(newTrack.box, t.box) > 0.6) {
+							isRight = false;
+						}
+					}
+					if (isRight == true) {
+						tracks.push_back(newTrack);
+						candidates.erase(candidates.begin() + bestIndexCan);
+						if (newTrack.classId == 15 && Beep_mode == true) {  
+							Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
+						}
+						else if ((newTrack.classId == 8 || newTrack.classId == 12) && Beep_mode == true) { 
+							Beep(1000, 300);  // частота 1000 Гц, длительность 200 мс
+						}
+						else if ((newTrack.classId == 4 || newTrack.classId == 6 || newTrack.classId == 14 || newTrack.classId == 19 || newTrack.classId == 7 || newTrack.classId == 2) && Beep_mode == true) {  // не чаще раза в 3 секунды
+							Beep(500, 300);  // частота 1000 Гц, длительность 200 мс
+						}
+					}
+
+				}
+				else {
+					candidates[bestIndexCan].seenFrames++;
+					candidates[bestIndexCan].box = det.box;
+					candidates[bestIndexCan].classId = det.classId;
+					candidates[bestIndexCan].missedFrames = 0;
+				}
+			}
+			else {
+				CandidateObject newCan;
+				newCan.box = det.box;
+				newCan.classId = det.classId;
+				newCan.confidence = det.confidence;
+				newCan.seenFrames = 1;
+				newCan.missedFrames = 0;
+				candidates.push_back(newCan);
+			}
+		}
+	}
+	for (int i = 0; i < tracks.size(); i++) {
+		if (tracks[i].lostFrames > 10) {
+			tracks.erase(tracks.begin() + i);
+			i--;
+		}
+	}
+	for (int i = 0; i < candidates.size(); i++) {
+		if (candidates[i].missedFrames > 2) {
+			candidates.erase(candidates.begin() + i);
+			i--;
+		}
+	}
 }
 void ShowInfo(cv::Mat& frame, double smoothedFps, double width, double height) {
 	cv::putText(frame,
@@ -89,10 +204,16 @@ void ShowName(cv::Mat& frame, double height, char filename[256]) {
 		FONT_COLOR,
 		1, cv::LINE_AA);
 }
-void DrawLabel(cv::Mat& frame, cv::Rect box, std::vector<std::string> classNames, float confidence, int left, int top, int classId, cv::Scalar color) {
-	cv::rectangle(frame, box, color, 2);
-	std::string label = classNames[classId] + " " + std::to_string((int)(confidence * 100)) + "%";
-	cv::putText(frame, label, cv::Point(left + 2, top + 17), FONT, 0.7, color, 1);
+void DrawLabel(cv::Mat& frame,  std::vector<std::string> classNames,  std::vector<TrackedObject>& tracks, int idCounter) {
+	cv::Scalar color;
+	for (int y = 0; y < tracks.size(); y++) {
+		if (tracks[y].classId == 15) color = cv::Scalar(255, 0, 0);
+		else if (tracks[y].classId == 8 || tracks[y].classId == 12) color = cv::Scalar(0, 255, 0);
+		else if (tracks[y].classId == 4 || tracks[y].classId == 6 || tracks[y].classId == 14 || tracks[y].classId == 19 || tracks[y].classId == 7 || tracks[y].classId == 2) color = cv::Scalar(0, 0, 255);
+		cv::rectangle(frame, tracks[y].box, color, 2);
+		std::string label = classNames[tracks[y].classId] + " #" + std::to_string(idCounter) + " " + std::to_string((int)(tracks[y].confidence * 100)) + "%";
+		cv::putText(frame, label, cv::Point(tracks[y].box.x + 2, tracks[y].box.y + 17), FONT, 0.7, color, 1);
+	}
 }
 void ShowMode(cv::Mat& frame, bool moveMode) {
 	std::string text = moveMode ? "Move Mode" : "Detection Mode";
@@ -113,6 +234,9 @@ int main()
 	std::chrono::steady_clock::time_point lastMotionTime;
 	auto start = std::chrono::steady_clock::now();
 	bool isRecording = false;
+	int idCounter = 1;
+	std::vector<TrackedObject> trackedObjects;
+	std::vector<CandidateObject> candidateObjects;
 
 	setlocale(LC_ALL, "Russian");
 	double smoothedFps = 0.0;
@@ -156,15 +280,10 @@ int main()
 			net.setInput(blob);
 			cv::Mat detections = net.forward();
 			auto now = std::chrono::steady_clock::now();
+			std::vector<Detection> detectionsList;
 			for (int i = 0; i < detections.size[2]; i++) {
 				float* data = (float*)detections.ptr<float>(0, 0, i);
 				float confidence = data[2];  // уверенность
-
-				if (confidence > 0.5) {
-					int classId = (int)data[1];
-					bool isInteresting = (classId == 15 || classId == 8 || classId == 12 ||
-						classId == 7 || classId == 2 || classId == 4 || classId == 6 || classId == 14 || classId == 19);
-					if (!isInteresting) continue;
 
 					// Нормализованные координаты
 					int left = (int)(data[3] * frame.cols);
@@ -174,33 +293,31 @@ int main()
 
 					int w = right - left;
 					int h = bottom - top;
+					if (confidence > 0.7 && w * h > 2000) {
+					int classId = (int)data[1];
+					bool isInteresting = (classId == 15 || classId == 8 || classId == 12 ||
+						classId == 7 || classId == 2 || classId == 4 || classId == 6 || classId == 14 || classId == 19);
+					if (!isInteresting) continue;
+
+				
 					cv::Rect box(left, top, w, h);
 					if (Move_mode == false) {
 						auto sinceLastBeep = std::chrono::duration_cast<std::chrono::seconds>(now - lastBeepTime).count();
-						if (classId == 15) {
-							DrawLabel(frame, box, classNames, confidence, left, top, classId, cv::Scalar(255, 0, 0));
-							if (sinceLastBeep >= 3 && Beep_mode == true) {  // не чаще раза в 3 секунды
-								Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
-								lastBeepTime = now;
-							}
-						}
-						else if (classId == 8 || classId == 12) {
-							DrawLabel(frame, box, classNames, confidence, left, top, classId, cv::Scalar(0, 255, 0));
-							if (sinceLastBeep >= 3 && Beep_mode == true) {  // не чаще раза в 3 секунды
-								Beep(1000, 300);  // частота 1000 Гц, длительность 200 мс
-								lastBeepTime = now;
-							}
-						}
-						else if (classId == 4 || classId == 6 || classId == 14 || classId == 19 || classId == 7 || classId == 2) {
-							DrawLabel(frame, box, classNames, confidence, left, top, classId, cv::Scalar(0, 0, 255));
-							if (sinceLastBeep >= 3 && Beep_mode == true) {  // не чаще раза в 3 секунды
-								Beep(500, 300);  // частота 1000 Гц, длительность 200 мс
-								lastBeepTime = now;
-							}
+						if (classId == 15 || classId == 8 || classId == 12 || classId == 4 || classId == 6 || classId == 14 || classId == 19 || classId == 7 || classId == 2) {
+							detectionsList.push_back({ box, classId, confidence });
 						}
 					}
 				}
 			}
+			/*if (sinceLastBeep >= 3 && Beep_mode == true) {  // не чаще раза в 3 секунды
+								Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
+								lastBeepTime = now;
+							}*/
+			updateTracks(detectionsList, trackedObjects, candidateObjects, idCounter, Beep_mode);
+			if (Move_mode == false) {
+				DrawLabel(frame, classNames, trackedObjects, idCounter);
+			}
+
 			
 			//вычисление фпс
 			int64 currTick = cv::getTickCount();
@@ -216,7 +333,7 @@ int main()
 				cv::Mat fgMask;
 				pBackSub->apply(gray, fgMask);
 				cv::threshold(fgMask, binary, 200, 255, cv::THRESH_BINARY);
-				std::vector<std::vector<cv::Point>> contours; // создаем векторконтуров
+				std::vector<std::vector<cv::Point>> contours; // создаем вектор контуров
 				cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);// обводим контуры изменившихся (движущихся) обьектов
 				std::vector<cv::Rect> boxes;
 				for (const auto& contour : contours) {// перебираем все полученные контуры
@@ -260,8 +377,7 @@ int main()
 
 						}
 					}
-						
-						
+
 						auto start_waiting = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
 						if (!finalBoxes.empty() && start_waiting > 5) {
 							// Прямо сейчас есть движение
