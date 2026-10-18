@@ -17,18 +17,13 @@ const int BLUR_SIZE = 5;
 const int THRESHOLD_VALUE = 5;
 const int MIN_CONTOUR_AREA = 500;
 std::chrono::steady_clock::time_point recStartTime;
-struct TrackedObject {
-	int id;
-	cv::Rect box;
-	int classId;
-	int lostFrames;
-	float confidence;
-};
+
 struct Detection {
 	cv::Rect box;
 	int classId;
 	float confidence;
 };
+//сырые данные об обнаруженном обьекте
 struct CandidateObject {
 	cv::Rect box;
 	int classId;
@@ -36,6 +31,15 @@ struct CandidateObject {
 	int seenFrames;
 	int missedFrames;
 };
+//кандидат на добавление в список треков если мы видим его несколько кадров
+struct TrackedObject {
+	int id;
+	cv::Rect box;
+	int classId;
+	int lostFrames;
+	float confidence;
+};
+//трек (отслеживаемый обьект)
 
 float IoU(cv::Rect a, cv::Rect b) {
 	int x1 = std::max(a.x, b.x);
@@ -87,7 +91,7 @@ void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>
 				}
 			}
 			if(bestIndexCan != -1 && bestIoUCan > 0.3f){
-				if (candidates[bestIndexCan].seenFrames >= 3) {
+				if (candidates[bestIndexCan].seenFrames >= 5) {
 					TrackedObject newTrack;
 					newTrack.box = det.box;
 					newTrack.classId = det.classId;
@@ -204,14 +208,14 @@ void ShowName(cv::Mat& frame, double height, char filename[256]) {
 		FONT_COLOR,
 		1, cv::LINE_AA);
 }
-void DrawLabel(cv::Mat& frame,  std::vector<std::string> classNames,  std::vector<TrackedObject>& tracks, int idCounter) {
+void DrawLabel(cv::Mat& frame,  std::vector<std::string> classNames,  std::vector<TrackedObject>& tracks) {
 	cv::Scalar color;
 	for (int y = 0; y < tracks.size(); y++) {
 		if (tracks[y].classId == 15) color = cv::Scalar(255, 0, 0);
 		else if (tracks[y].classId == 8 || tracks[y].classId == 12) color = cv::Scalar(0, 255, 0);
 		else if (tracks[y].classId == 4 || tracks[y].classId == 6 || tracks[y].classId == 14 || tracks[y].classId == 19 || tracks[y].classId == 7 || tracks[y].classId == 2) color = cv::Scalar(0, 0, 255);
 		cv::rectangle(frame, tracks[y].box, color, 2);
-		std::string label = classNames[tracks[y].classId] + " #" + std::to_string(idCounter) + " " + std::to_string((int)(tracks[y].confidence * 100)) + "%";
+		std::string label = classNames[tracks[y].classId] + /*" #" + std::to_string(idCounter) + */" " + std::to_string((int)(tracks[y].confidence * 100)) + "%";
 		cv::putText(frame, label, cv::Point(tracks[y].box.x + 2, tracks[y].box.y + 17), FONT, 0.7, color, 1);
 	}
 }
@@ -219,17 +223,39 @@ void ShowMode(cv::Mat& frame, bool moveMode) {
 	std::string text = moveMode ? "Move Mode" : "Detection Mode";
 	cv::putText(frame, text, cv::Point(INFO_PANEL_X, INFO_PANEL_Y + 60), FONT, FONT_SIZE_BASIC, FONT_COLOR, 1, cv::LINE_AA);
 }
+void ShowFileName(cv::Mat& frame, bool &ShowVid, bool &ShowScreen, int &ITRVid, int &ITRScreen, int height,  char Filename[256], char ScreenshotName[256]) {
+	if (ITRScreen != 0) {
+		ITRVid = ITRScreen * -1;
+	}
+	if (ShowVid == true && ITRVid < 50 && ITRScreen == 0) {
+		ShowName(frame, height, Filename);
+		ITRVid++;
+	}
+	else if (ShowVid == true && ITRVid >= 50) {
+		ShowVid = false;
+		ITRVid = 0;
+	}
+	if (ShowScreen == true && ITRScreen < 50) {
+		ShowName(frame, height, ScreenshotName);
+		ITRScreen++;
+	}
+	else if (ShowScreen == true && ITRScreen >= 50) {
+		ShowScreen = false;
+		ITRScreen = 0;
+	}
+}
 
 int main()
 {
-	auto lastBeepTime = std::chrono::steady_clock::now();
 	bool Move_mode = false;
 	bool Beep_mode = true;
 	bool isREC = false;
 	char Filename[256];
 	char ScreenshotName[256];
-	bool IsShowName = false;
-	int ShowNameITR = 0;
+	bool IsShowNameVid = false;
+	bool IsShowNameScreen = false;
+	int ShowNameITRVid = 0;
+	int ShowNameITRScreen = 0;
 	bool isMotion = false;
 	std::chrono::steady_clock::time_point lastMotionTime;
 	auto start = std::chrono::steady_clock::now();
@@ -302,20 +328,15 @@ int main()
 				
 					cv::Rect box(left, top, w, h);
 					if (Move_mode == false) {
-						auto sinceLastBeep = std::chrono::duration_cast<std::chrono::seconds>(now - lastBeepTime).count();
 						if (classId == 15 || classId == 8 || classId == 12 || classId == 4 || classId == 6 || classId == 14 || classId == 19 || classId == 7 || classId == 2) {
 							detectionsList.push_back({ box, classId, confidence });
 						}
 					}
 				}
 			}
-			/*if (sinceLastBeep >= 3 && Beep_mode == true) {  // не чаще раза в 3 секунды
-								Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
-								lastBeepTime = now;
-							}*/
 			updateTracks(detectionsList, trackedObjects, candidateObjects, idCounter, Beep_mode);
 			if (Move_mode == false) {
-				DrawLabel(frame, classNames, trackedObjects, idCounter);
+				DrawLabel(frame, classNames, trackedObjects);
 			}
 
 			
@@ -392,8 +413,8 @@ int main()
 						if ((isREC && !isMotion) && isRecording == false) {
 							writer.release();
 							isREC = false;
-							IsShowName = true;
-							ShowNameITR = 0;
+							IsShowNameVid = true;
+							ShowNameITRVid = 0;
 							std::cout << "Запись остановлена (нет движения): " << Filename << std::endl;
 						}
 
@@ -404,14 +425,7 @@ int main()
 				writer.write(frame);
 				ShowREC(frame, width);
 			}
-			if (IsShowName == true && ShowNameITR < 50) {
-				ShowName(frame, height, Filename);
-				ShowNameITR++;
-			}
-			else if (IsShowName == true && ShowNameITR >= 50) {
-				IsShowName = false;
-				ShowNameITR = 0;
-			}
+			ShowFileName(frame, IsShowNameVid, IsShowNameScreen, ShowNameITRVid, ShowNameITRScreen, height, Filename, ScreenshotName);
 			if (!frame.empty())
 			{
 				cv::imshow("Video Player", frame);
@@ -453,17 +467,19 @@ int main()
 			else if (isPressedREC && isREC == true) {
 				writer.release();
 				isREC = false;
-				IsShowName = true;
-				ShowNameITR = 0;
+				IsShowNameVid = true;
+				ShowNameITRVid = 0;
 				std::cout << "Запись сохранена " << std::endl;
 			}
 			if (isPressedScreenshot) {
 				std::time_t now = std::time(nullptr);
 				localtime_s(&timeinfo, &now);
 				strftime(ScreenshotName, sizeof(ScreenshotName),
-					"video_%Y_%m_%d_%H-%M-%S.png", &timeinfo);
+					"photo_%Y_%m_%d_%H-%M-%S.png", &timeinfo);
 				cv::imwrite(ScreenshotName, frame);
 				std::cout << "Скриншот сохранён: " << ScreenshotName << std::endl;
+				ShowNameITRVid = 0;
+				IsShowNameScreen = true;
 			}
 			if (isPressedMode) {
 				Move_mode = !Move_mode;
