@@ -6,6 +6,8 @@
 #include <opencv2/dnn.hpp> 
 #define NOMINMAX
 #include <windows.h> 
+#include <curl/curl.h>
+#include <thread>
 
 const double ALPHA = 0.01;
 const cv::Scalar FONT_COLOR(192, 192, 192);
@@ -17,6 +19,13 @@ const int BLUR_SIZE = 5;
 const int THRESHOLD_VALUE = 5;
 const int MIN_CONTOUR_AREA = 500;
 std::chrono::steady_clock::time_point recStartTime;
+const float MIN_CONFIDENCE = 0.7f;
+const int MIN_AREA = 2000;
+const float IOU_MATCH_DET = 0.3f;
+const float IOU_MATCH_CAN = 0.3f;
+const int CANDIDATE_FRAMES_TO_CONFIRM = 5;
+const int CANDIDATE_MAX_MISSED_FRAMES = 2;
+const int TRACK_MAX_LOST_FRAMES = 10;
 
 struct Detection {
 	cv::Rect box;
@@ -54,6 +63,23 @@ float IoU(cv::Rect a, cv::Rect b) {
 	float coof = (float) intersection / unification;
 	return coof;
 }
+void SendNotification(std::string url) {
+	CURL* curl = curl_easy_init();
+	if (curl) {
+		/*std::string url = "https://ntfy.sh/WebcamCapture_colQwe?title=Webcam+Alert";*/
+		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());// задаем топик
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");// задаем сообщение
+		curl_easy_setopt(curl, CURLOPT_POST, 1L);//делаем сообщение POST 
+		CURLcode result = curl_easy_perform(curl);// получаем код результата отправки
+		if (result != CURLE_OK) {
+			std::cerr << "Отправка не удалась";
+		}
+		curl_easy_cleanup(curl);
+	}
+	else {
+		std::cerr << "Не удалось инициализировать отправку";
+	}
+}
 void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>& tracks, std::vector<CandidateObject>& candidates,  int& idCounter, bool Beep_mode){
 	for (auto& track : tracks) {
 		track.lostFrames++;
@@ -75,7 +101,7 @@ void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>
 			}
 
 		}
-		if (bestIoU > 0.3f && bestMatchIndex != -1) {
+		if (bestIoU > IOU_MATCH_DET && bestMatchIndex != -1) {
 			tracks[bestMatchIndex].box = det.box;
 			tracks[bestMatchIndex].confidence = det.confidence;
 			tracks[bestMatchIndex].lostFrames = 0;
@@ -90,8 +116,8 @@ void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>
 					bestIndexCan = i;
 				}
 			}
-			if(bestIndexCan != -1 && bestIoUCan > 0.3f){
-				if (candidates[bestIndexCan].seenFrames >= 5) {
+			if(bestIndexCan != -1 && bestIoUCan > IOU_MATCH_CAN){
+				if (candidates[bestIndexCan].seenFrames >= CANDIDATE_FRAMES_TO_CONFIRM) {
 					TrackedObject newTrack;
 					newTrack.box = det.box;
 					newTrack.classId = det.classId;
@@ -105,6 +131,7 @@ void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>
 						}
 					}
 					if (isRight == true) {
+						std::thread(SendNotification, "https://ntfy.sh/WebcamCapture_colQwe?title=New+Object+Detected" ).detach();
 						tracks.push_back(newTrack);
 						candidates.erase(candidates.begin() + bestIndexCan);
 						if (newTrack.classId == 15 && Beep_mode == true) {  
@@ -138,13 +165,13 @@ void updateTracks(std::vector<Detection>& detections, std::vector<TrackedObject>
 		}
 	}
 	for (int i = 0; i < tracks.size(); i++) {
-		if (tracks[i].lostFrames > 10) {
+		if (tracks[i].lostFrames > TRACK_MAX_LOST_FRAMES) {
 			tracks.erase(tracks.begin() + i);
 			i--;
 		}
 	}
 	for (int i = 0; i < candidates.size(); i++) {
-		if (candidates[i].missedFrames > 2) {
+		if (candidates[i].missedFrames > CANDIDATE_MAX_MISSED_FRAMES) {
 			candidates.erase(candidates.begin() + i);
 			i--;
 		}
@@ -219,10 +246,15 @@ void DrawLabel(cv::Mat& frame,  std::vector<std::string> classNames,  std::vecto
 		cv::putText(frame, label, cv::Point(tracks[y].box.x + 2, tracks[y].box.y + 17), FONT, 0.7, color, 1);
 	}
 }
-void ShowMode(cv::Mat& frame, bool moveMode) {
-	std::string text = moveMode ? "Move Mode" : "Detection Mode";
-	cv::putText(frame, text, cv::Point(INFO_PANEL_X, INFO_PANEL_Y + 60), FONT, FONT_SIZE_BASIC, FONT_COLOR, 1, cv::LINE_AA);
-}
+void ShowMode(cv::Mat& frame, bool moveMode, bool BeepMode, int TrackCounter) {
+	std::string Modetext = moveMode ? "Move Mode" : "Detection Mode";
+	std::string Soundtext = BeepMode ? "Sound ON" : "Sound OFF";
+	cv::putText(frame, Modetext, cv::Point(INFO_PANEL_X, INFO_PANEL_Y + 60), FONT, FONT_SIZE_BASIC, FONT_COLOR, 1, cv::LINE_AA);
+	cv::putText(frame, Soundtext, cv::Point(INFO_PANEL_X, INFO_PANEL_Y + 90), FONT, FONT_SIZE_BASIC, FONT_COLOR, 1, cv::LINE_AA);
+	if (!moveMode) {
+		cv::putText(frame, "Objects: " + std::to_string(TrackCounter), cv::Point(INFO_PANEL_X, INFO_PANEL_Y + 120), FONT, FONT_SIZE_BASIC, FONT_COLOR, 1, cv::LINE_AA);
+	}
+	}
 void ShowFileName(cv::Mat& frame, bool &ShowVid, bool &ShowScreen, int &ITRVid, int &ITRScreen, int height,  char Filename[256], char ScreenshotName[256]) {
 	if (ITRScreen != 0) {
 		ITRVid = ITRScreen * -1;
@@ -261,6 +293,7 @@ int main()
 	auto start = std::chrono::steady_clock::now();
 	bool isRecording = false;
 	int idCounter = 1;
+	int TrackCounter;
 	std::vector<TrackedObject> trackedObjects;
 	std::vector<CandidateObject> candidateObjects;
 
@@ -285,6 +318,7 @@ int main()
 	if (cap.isOpened())
 	{
 		std::cout << "Камера найдена!" << std::endl;
+		std::thread(SendNotification, "https://ntfy.sh/WebcamCapture_colQwe?title=Start+Capturing").detach();
 		//вычисление разрешения
 		double width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
 		double height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
@@ -319,9 +353,9 @@ int main()
 
 					int w = right - left;
 					int h = bottom - top;
-					if (confidence > 0.7 && w * h > 2000) {
-					int classId = (int)data[1];
-					bool isInteresting = (classId == 15 || classId == 8 || classId == 12 ||
+				if (confidence > MIN_CONFIDENCE && w * h > MIN_AREA) {
+						int classId = (int)data[1];
+						bool isInteresting = (classId == 15 || classId == 8 || classId == 12 ||
 						classId == 7 || classId == 2 || classId == 4 || classId == 6 || classId == 14 || classId == 19);
 					if (!isInteresting) continue;
 
@@ -338,7 +372,7 @@ int main()
 			if (Move_mode == false) {
 				DrawLabel(frame, classNames, trackedObjects);
 			}
-
+			TrackCounter = trackedObjects.size();
 			
 			//вычисление фпс
 			int64 currTick = cv::getTickCount();
@@ -419,7 +453,7 @@ int main()
 						}
 
 			ShowInfo(frame, smoothedFps, width, height);
-			ShowMode(frame, Move_mode);
+			ShowMode(frame, Move_mode, Beep_mode, TrackCounter);
 
 			if (isREC) {
 				writer.write(frame);
@@ -439,11 +473,11 @@ int main()
 
 			int key = cv::waitKey(1);
 			struct tm timeinfo;
-			bool isPressedREC = (key == 114 || key == 82 || key == 234 || key == 202);
-			bool isPressedMode = (key == 109 || key == 77 || key == 252 || key == 220);
+			bool isPressedREC = (key == 114 || key == 82 || key == 234 || key == 202);//R
+			bool isPressedMode = (key == 109 || key == 77 || key == 252 || key == 220);//M
 			bool isPressedESC = (key == 27);
-			bool isPressedScreenshot = (key == 32);
-			bool isPressedBeep = (key == 242 || key == 210 || key == 110 || key == 78);
+			bool isPressedScreenshot = (key == 32);//Space
+			bool isPressedBeep = (key == 242 || key == 210 || key == 110 || key == 78);//N
 			if (isPressedREC) {
 				isRecording = !isRecording;
 			}

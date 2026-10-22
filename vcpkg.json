@@ -1,0 +1,8 @@
+{
+  "name": "webcamcapture",
+  "version": "1.0.0",
+  "dependencies": [
+    "curl"
+  ],
+  "builtin-baseline": "d6eee3dba8766a176e08ee4c741ae0b166ebbfcd"
+}
