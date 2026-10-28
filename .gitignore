@@ -79,3 +79,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+#exceptions
+!portable_release/*.exe
+!portable_release/*.dll
+!portable_release/models/*.caffemodel
