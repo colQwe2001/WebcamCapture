@@ -5,7 +5,7 @@
 #include <fstream>
 #include <opencv2/dnn.hpp> 
 #define NOMINMAX
-#include <windows.h> 
+//#include <windows.h> 
 #include <curl/curl.h>
 #include <thread>
 
@@ -135,13 +135,16 @@ void updateTracks(cv::Mat& frame, std::vector<Detection>& detections, std::vecto
 						candidates.erase(candidates.begin() + bestIndexCan);
 						if (Beep_mode) {
 							if (newTrack.classId == 15) {
-								Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
+								std::cout << "\a" << std::flush;
+								//Beep(1500, 300);  // частота 1000 Гц, длительность 200 мс
 							}
 							else if ((newTrack.classId == 8 || newTrack.classId == 12)) {
-								Beep(1000, 300);  // частота 1000 Гц, длительность 200 мс
+								std::cout << "\a" << std::flush;
+								//Beep(1000, 300);  // частота 1000 Гц, длительность 200 мс
 							}
 							else if ((newTrack.classId == 4 || newTrack.classId == 6 || newTrack.classId == 14 || newTrack.classId == 19 || newTrack.classId == 7 || newTrack.classId == 2)) {  // не чаще раза в 3 секунды
-								Beep(500, 300);  // частота 1000 Гц, длительность 200 мс
+								std::cout << "\a" << std::flush;
+								//Beep(500, 300);  // частота 1000 Гц, длительность 200 мс
 							}
 						}
 					}
@@ -504,7 +507,11 @@ int main()
 			if (isPressedESC || cv::getWindowProperty("Video Player", cv::WND_PROP_VISIBLE) < 1) break; //  кнопка ESC (выход)
 			if ((isPressedREC && isREC == false) ||(isMotion == true && isREC == false)){
 				std::time_t now = std::time(nullptr);
+			#ifdef _WIN32
 				localtime_s(&timeinfo, &now);
+			#else
+				localtime_r(&now, &timeinfo);
+			#endif
 				strftime(Filename, sizeof(Filename),
 					"video_%Y_%m_%d_%H-%M-%S.avi", &timeinfo);
 				writer.open(Filename,
@@ -527,7 +534,11 @@ int main()
 			}
 			if (isPressedScreenshot) {
 				std::time_t now = std::time(nullptr);
+			#ifdef _WIN32
 				localtime_s(&timeinfo, &now);
+			#else
+				localtime_r(&now, &timeinfo);
+			#endif
 				strftime(ScreenshotName, sizeof(ScreenshotName),
 					"photo_%Y_%m_%d_%H-%M-%S.png", &timeinfo);
 				cv::imwrite(ScreenshotName, frame);
